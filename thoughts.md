@@ -74,6 +74,21 @@
 
 ## 设计思路
 
+### 基本思路
+
+`kuro` 使用以下步骤执行，以 `kuro build` 过程为例。
+
+1. 分析当前待编译的项目代码和它依赖的所有代码，将这些代码放入 `kuro` 缓存目录中，这部分可以直接基于 `go mod graph` 的功能来实现。
+2. 解析所有代码的 AST，构建一个依赖树。
+3. 从依赖树的最叶子节点出发，逐个分析是否存在使用 `github.com/go-kuro/meta` 的代码，如果有，开始生成「生成代码」的程序，并执行。
+   - `kuro` 将所有用到 meta 的代码转化成操作 AST 的代码，提取出来放到一个临时的目录里面，所有函数的输入都是 AST，输出是修改过后的 AST，编译相关代码，生成一个独立的 binary。
+   - `kuro` 分析所有被修改的代码位置，在 AST 里面标记出来，生成 DAG。
+   - `kuro` 将 AST 和 DAG 输入给生成的 binary，执行完成后得到生成好的 AST。
+   - `kuro` 将 AST 转化成实际的代码，在此过程中，如果在当前仓库控制之外的代码被修改（比如框架的代码），需要将代码放入 `internal/kuro/traced` 目录里去，并改相关的 import。由于 Go 不能简单的对库进行部分修改，所以一旦一个库的某个目录有一行代码被 `kuro` 修改，则这个目录所有文件都需要放到这个目录里面进行管理；如果这个目录有代码调用了库的 `internal` 目录里面的东西，则整个库都需要放到这个 `internal` 里面。
+4. 调用 `go build` 进行真正的编译工作。
+
+### 特殊设计思路
+
 同时，这个项目有几个很特殊的设计：
 
 - VCS 集成：跟 `go generate` 和很多代码生成工具不一样，`kuro` 更倾向于直接管理 VCS 里面的代码，而不是生成代码后让用户自行提交，`kuro` 会（希望能做到）自动的 merge 代码。
@@ -105,9 +120,9 @@ $ git push                        # push to upstream controlled by kuro.
                                   # kuro will generate code and merge changes.
 ```
 
-### 使用 metadata
+### 使用 macro
 
-演示如何在 Go 里面添加 metadata，参考 TypeScript metadata 相关接口。
+演示如何在 Go 里面使用 macro。
 
 ```go
 // 业务代码。
@@ -120,8 +135,8 @@ import (
     "url.to/my/framework/foo"
 )
 
-func F1(ctx context.Context, a int) error {
-    foo.Validate(ctx, a > 0) // 如果不符合要求，则返回框架预设值的错误码并返回。
+func Hello(ctx context.Context, name string) (msg string, err error) {
+    foo.Validate(ctx, name != "" && len(name) < 25) // 如果不符合要求，则返回框架预设值的错误码并返回。
 
     // 业务代码。
 }
@@ -133,15 +148,139 @@ func F1(ctx context.Context, a int) error {
 package foo
 
 import (
-    "github.com/go-kuro/meta/macros"
-    "github.com/go-kuro/meta/types"
+    "github.com/go-kuro/meta/ast"
+    "github.com/go-kuro/meta/builder"
+    "github.com/go-kuro/meta/macro"
 )
 
 // Validate 检查 conds，如果不为真，则终止后续逻辑。
-// 返回 stmt 会经过 kuro 编译成一段代码 Go 代码。
-func Validate(ctx context.Context, conds ...bool) (stmt macros.Statement) {
-    stmt.Add(macros.Format(`if $(||) { return foo.ServerError($, 400) }`, conds)) // API 还没想好怎么设计。
+func Validate(ctx context.Context, cond bool) {
+    // macro.Caller 获得指定调用者的上下文，
+    // 然后在这个上下文里面运行指定的宏。
+    macro.Caller(Validate).Run(validate)
+}
+
+// validate 返回 stmt 会经过 kuro 编译成一段代码 Go 代码。
+func validate(decl ast.Decl, expr ast.CallExpr) (stmt ast.Stmt) {
+    // API 还没想好怎么设计，先写一个 demo。
+
+    ctx := expr.Args(0)       // 第一个参数。
+    cond := expr.ArgsRange(1) // 第二个参数。
+
+    // 获得当前调用这段代码所在函数声明。
+    results := decl.(ast.FuncDecl).Results()
+
+    // 相当于在业务代码里面写了几个 import。
+    pkg := builder.Import(macro.CurrentPackage())
+    pkgLog := builder.Import("path/to/a/log/pkg")
+
+    // 相当于写了如下代码：
+    //     func Hello(ctx context.Context, name string) (msg string, err error) {
+    //         if !(name != "" && len(name) < 25) {
+    //             log.Errorf(ctx, "invalid query")
+    //             err = foo.ServerError(ctx, foo.ErrInvalidQuery)
+    //             return
+    //         }
+    //
+    //         // 业务代码
+    //     }
+    stmt = builder.If(nil, builder.LogicNot(cond), builder.Block(
+        builder.CallExpr(pkgLog.Lookup("Errorf"), ctx, "invalid query"),
+        results.SetError(
+            builder.CallExpr(pkg.Lookup("ServerError"), ctx, pkg.Lookup("ErrInvalidQuery")),
+        )
+        builder.Return(results),
+    ))
     return
+}
+```
+
+### 使用 decorator
+
+演示如何在代码中添加 decorator。
+
+```go
+// 业务代码。
+
+package main
+
+import (
+    "github.com/go-kuro/meta/deco"
+
+    "url.to/my/framework/foo"
+)
+
+var _ = deco.Decorate(Hello).With(foo.NoPanic)
+
+func Hello(ctx context.Context, name string) (msg string, err error) {
+    panic("should be caught by foo")
+}
+```
+
+```go
+// 框架代码。
+
+package foo
+
+import (
+    "github.com/go-kuro/meta/ast"
+    "github.com/go-kuro/meta/builder"
+)
+
+// NoPanic 在函数开头增加一段 defer 代码。
+func NoPanic(decl ast.Decl) ast.Decl {
+    r := builder.Var("r")
+    results := decl.(ast.FuncDecl).Results()
+
+    // 相当于在业务代码里面写了几个 import。
+    pkg := builder.Import(macro.CurrentPackage())
+
+    // 生成一段代码：
+    //     defer func() {
+    //         if r := recover(); r != nil {
+    //             err = foo.ServerError(ctx, foo.ErrInternalServerError)
+    //         }
+    //     }()
+    stmt := builder.Defer(builder.Func(nil, nil, builder.Block(
+        builder.If(builder.AssignStmt(r, builder.Recover()), builder.Neg(r, nil), builder.Block(
+            results.SetError(
+                builder.CallExpr(pkg.Lookup("ServerError"), ctx, pkg.Lookup("ErrInternalServerError")),
+            )
+        ))
+    )))
+    list := append([]ast.Stmt{stmt}, decl.Body.List...)
+    decl.Body.List = list
+    return decl
+}
+```
+
+### 使用 metadata
+
+演示如何在代码中添加 metadata。
+
+```go
+// 业务代码。
+
+package main
+
+import (
+    "github.com/go-kuro/meta/deco"
+
+    "url.to/my/framework/foo"
+)
+
+var _ = deco.Decorate(Hello).SetData("foo:url", "/api/foo")
+
+func Hello(ctx context.Context, name string) (msg string, err error) {
+    // 业务代码。
+}
+```
+
+这样设置 metadata 之后，可以在 `ast.Node` 里面读到这个数据。
+
+```go
+type Node interface {
+    Data(key string) (value interface{}, ok bool)
 }
 ```
 
