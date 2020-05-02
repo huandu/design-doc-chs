@@ -6,7 +6,7 @@
 
 整体来说，`go-kuro` 项目是想做一个更好的 Go code generator，能够将一些 metaprogramming 的能力引入到 Go1。
 
-虽然可能再不到 12 个月 Go2 就可能要开始 beta 了，但是就算 Go2 的 trait 依然无法实现任何的 metaprogramming 能力，无法很好的在编译期解决很多常见的问题，比如 annotation、编译期代码特化（避免无节制使用 `interface{}`）、可编程的宏（即 metaprogramming）等。
+虽然 Go2 可能不到 12 个月就要开始 beta 了，但是就算 Go2 的 trait 依然无法实现任何的 metaprogramming 能力，无法在编译期执行任何逻辑代码，比如 decorator、编译期代码特化（避免无节制使用 `interface{}`）、可编程的宏（即静态代码生成）等。
 
 ## 使用场景
 
@@ -74,9 +74,9 @@
 
 ## 设计思路
 
-### 基本思路
+### 基本工作原理
 
-`kuro` 使用以下步骤执行，以 `kuro build` 过程为例。
+以 `kuro build` 过程为例。
 
 1. 分析当前待编译的项目代码和它依赖的所有代码，将这些代码放入 `kuro` 缓存目录中，这部分可以直接基于 `go mod graph` 的功能来实现。
 2. 解析所有代码的 AST，构建一个依赖树。
@@ -185,9 +185,9 @@ func validate(decl ast.Decl, expr ast.CallExpr) (stmt ast.Stmt) {
     //         // 业务代码
     //     }
     stmt = builder.If(nil, builder.LogicNot(cond), builder.Block(
-        builder.CallExpr(pkgLog.Lookup("Errorf"), ctx, "invalid query"),
+        builder.Call(pkgLog.Lookup("Errorf"), ctx, "invalid query"),
         results.SetError(
-            builder.CallExpr(pkg.Lookup("ServerError"), ctx, pkg.Lookup("ErrInvalidQuery")),
+            builder.Call(pkg.Lookup("ServerError"), ctx, pkg.Lookup("ErrInvalidQuery")),
         )
         builder.Return(results),
     ))
@@ -229,6 +229,8 @@ import (
 
 // NoPanic 在函数开头增加一段 defer 代码。
 func NoPanic(decl ast.Decl) ast.Decl {
+    // API 还没想好怎么设计，先写一个 demo。
+
     r := builder.Var("r")
     results := decl.(ast.FuncDecl).Results()
 
@@ -241,13 +243,13 @@ func NoPanic(decl ast.Decl) ast.Decl {
     //             err = foo.ServerError(ctx, foo.ErrInternalServerError)
     //         }
     //     }()
-    stmt := builder.Defer(builder.Func(nil, nil, builder.Block(
-        builder.If(builder.AssignStmt(r, builder.Recover()), builder.Neg(r, nil), builder.Block(
+    stmt := builder.Defer(builder.Call(builder.FuncLit(nil, nil, builder.Block(
+        builder.If(builder.Assign(r, builder.Recover()), builder.Neg(r, nil), builder.Block(
             results.SetError(
                 builder.CallExpr(pkg.Lookup("ServerError"), ctx, pkg.Lookup("ErrInternalServerError")),
             )
         ))
-    )))
+    ))))
     list := append([]ast.Stmt{stmt}, decl.Body.List...)
     decl.Body.List = list
     return decl
