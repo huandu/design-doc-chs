@@ -1,10 +1,16 @@
 # go-kuro 设计文档（中文版）
 
-[![LICENSE](https://i.creativecommons.org/l/by/4.0/80x15.png)](http://creativecommons.org/licenses/by/4.0/)
+## 概述
 
-`go-kuro` 是一个专门为 Go 开发的代码生成器，用于实现 Go metaprogramming，方便 Go 框架开发者编写出封装层次更高的代码，让框架使用者能更加专注与业务逻辑而非各种细枝末节。
+`go-kuro` 是一个专门为 Go 开发的 metaprogramming 工具和框架，方便 Go 框架开发者编写出封装层次更高的代码，让业务开发者更加专注与业务逻辑而非各种细枝末节。
 
-更多信息 TBD。
+由于这个文档并非公开的设计文档，仅用于整理开发思路和对齐设计节奏，因此不会太过于在于文档组织的规范性，可能会比较跳跃。
+
+具体设计思路详见[零碎的设计思路](thoughts.md)。
+
+## 开发节奏
+
+详见[路线图](roadmap.md)。
 
 ## 周边信息
 
