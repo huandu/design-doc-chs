@@ -6,7 +6,7 @@
 
 整体来说，`go-kuro` 项目是想做一个更好的 Go code generator，能够将一些 metaprogramming 的能力引入到 Go1。
 
-虽然 Go2 可能不到 12 个月就要开始 beta 了，但是就算 Go2 的 trait 依然无法实现任何的 metaprogramming 能力，无法在编译期执行任何逻辑代码，比如 decorator、编译期代码特化（避免无节制使用 `interface{}`）、可编程的宏（即静态代码生成）等。
+虽然 Go2 可能不到 12 个月就要开始 beta 了，但是就算 Go2 的 trait 依然无法实现任何的 metaprogramming 能力，无法在编译期执行任何逻辑代码，比如编译期代码特化（避免无节制使用 `interface{}`）、可编程的宏（即静态代码生成）等。
 
 ## 使用场景
 

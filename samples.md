@@ -4,12 +4,12 @@
 
 ## Macro
 
-这里演示如何实现一个业务 assert，特点是：
+这里演示如何用 macro 实现一个业务 assert，特点是：
 
 - 对条件进行 assert，如果通过什么也不会发生，如果不通过，则自动向上返回错误。
 - 能自动在 err 里面写上所有上下文相关变量信息。
 
-业务代码。
+### 使用 `assert` 的业务代码
 
 ```go
 package main
@@ -26,7 +26,7 @@ func F(a int, b float64) (r float64, err error) {
 }
 ```
 
-框架代码。
+### `assert` 框架代码
 
 ```go
 package assert
@@ -99,17 +99,19 @@ func init() {
             //     if err = assert.Assert(a > 0 && b > 0); err != nil {
             //         return
             //     }
-            modified = append(modified, &builder.IfStmt{
-                Init: &builder.AssignStmt{
+            modified = append(modified, &ast.IfStmt{
+                Init: &ast.AssignStmt{
                     Lhs: []ast.Expr{err},
                     Rhs: []ast.Expr{assert},
                 },
-                Cond: &builder.BinaryExpr{
+                Cond: &ast.BinaryExpr{
                     X: err,
-                    Op: token.NEQ, // !=
-                    Y: builder.Nil,
+                    Op: token.NEQ,
+                    Y: &ast.Ident{
+                        Name: "nil",
+                    },
                 },
-                Body: &builder.BlockStmt{
+                Body: &ast.BlockStmt{
                     List: []ast.Stmt{
                         builder.Return(err),
                     },
@@ -118,114 +120,5 @@ func init() {
             return
         })
     })
-}
-```
-
-## Decorator
-
-演示如何在代码中添加 decorator。
-
-TODO: 代码需要更新，API 升级了。
-
-```go
-// 业务代码。
-
-package main
-
-import (
-    "github.com/go-kuro/meta/deco"
-
-    "url.to/my/framework/foo"
-)
-
-var _ = deco.Decorate(Hello).With(foo.NoPanic)
-
-func Hello(ctx context.Context, name string) (msg string, err error) {
-    panic("should be caught by foo")
-}
-```
-
-```go
-// 框架代码。
-
-package foo
-
-import (
-    "github.com/go-kuro/kuro/ast"
-    "github.com/go-kuro/kuro/builder"
-)
-
-// NoPanic 在函数开头增加一段 defer 代码。
-func NoPanic(decl ast.Decl) ast.Decl {
-    // API 还没想好怎么设计，先写一个 demo。
-
-    r := builder.Var("r")
-    results := decl.(ast.FuncDecl).Results()
-
-    // 相当于在业务代码里面写了几个 import。
-    pkg := builder.Import(macro.CurrentPackage())
-
-    // 生成一段代码：
-    //     defer func() {
-    //         if r := recover(); r != nil {
-    //             err = foo.ServerError(ctx, foo.ErrInternalServerError)
-    //         }
-    //     }()
-    stmt := builder.Defer(builder.Call(builder.FuncLit(nil, nil, builder.Block(
-        builder.If(builder.Assign(r, builder.Recover()), builder.Neg(r, nil), builder.Block(
-            results.SetError(
-                builder.CallExpr(pkg.Lookup("ServerError"), ctx, pkg.Lookup("ErrInternalServerError")),
-            )
-        ))
-    ))))
-    list := append([]ast.Stmt{stmt}, decl.Body.List...)
-    decl.Body.List = list
-    return decl
-}
-```
-
-## Metadata
-
-演示如何在代码中添加 metadata。
-
-```go
-// 业务代码。
-
-package main
-
-import (
-    "github.com/go-kuro/meta/deco"
-
-    "url.to/my/framework/foo"
-)
-
-var _ = deco.Decorate(Hello).SetData("foo:url", "/api/foo")
-
-func Hello(ctx context.Context, name string) (msg string, err error) {
-    // 业务代码。
-}
-```
-
-这样设置 metadata 之后，可以在 `ast.Node` 里面读到这个数据。
-
-```go
-type Node interface {
-    Data(key string) (value interface{}, ok bool)
-}
-```
-
-## Generic Types
-
-```go
-package fmt
-
-import (
-    "github.com/go-kuro/meta/types"
-)
-
-func Printf(format string, values ...types.Any) (n int, err error) {
-    // types.Any 代表任意不同的类型，底层用 interface{} 实现，编译时候会转成相关必要代码。
-    // 具体实现参考 C++20 std::format 的实现思路，由于过于复杂，不在此展开。
-    // 还有很多思路和实现的细节没有想清楚，未来需要完善。
 }
 ```
