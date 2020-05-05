@@ -38,7 +38,7 @@ import (
     "github.com/go-kuro/kuro/ast"
     "github.com/go-kuro/kuro/builder"
     "github.com/go-kuro/kuro/query"
-    "github.com/go-kuro/meta/macro"
+    "github.com/go-kuro/macro"
 )
 
 func Assert(cond bool) (err error) {

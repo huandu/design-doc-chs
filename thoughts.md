@@ -27,21 +27,13 @@
 
 参考 [Rust Macros](https://doc.rust-lang.org/1.43.0/book/ch19-06-macros.html) 和 [Nim Macros](https://nim-lang.org/docs/manual.html#macros)。
 
-### 实现 trait
-
-考虑到 Go2 很可能会加上 Rust 类似的 trait 语法，在 `go-kuro` 里面不做任何 Go2 trait 相关的能力，等 Go2 发布。
-
-不过需要实现一些 Go2 不打算实现的额外 trait，比如 `string | int` 这种同时明确的支持多种不兼容类型的代码。
-
-参考 [Rust traits](https://doc.rust-lang.org/1.43.0/book/ch10-02-traits.html) 和 [TypeScript Advanced Types](https://www.typescriptlang.org/docs/handbook/advanced-types.html)。
-
 ## 功能规划
 
 这个仓库主要实现三大类功能：
 
 - `kuro`：A Go command line drop-in replacement，可以直接替代 `go` 这个命令，并且增加很多额外的功能。
-- kuro meta packages：一些 metaprogramming 基础库，可以方便使用者在代码里面添加一些只有 kuro 能够识别和编译的 meta data 和 marker。
-- STL-like container & algorithm packages：用来演示 metaprogramming 能力的基础数据结构和算法库，类似于 C++ STL，重新把 Go 基础库里面相关的东西实现一遍，用来验证 kuro 易用性。
+- Kuro AST manipulation：各种 AST manipulation 库。
+- Kuro macro：实现 metaprogramming 的基础「安全宏」，其本质上是一个代码预编译器。
 
 ### `kuro` 命令行
 
@@ -55,22 +47,23 @@
 - `kuro help`：提供必要的帮助，同时也包装了 `go help` 的全部功能。
 - `kuro magic`：各种扩展命令，用来实现各种特定功能。
 
-### Kuro meta packages
+### Kuro AST manipulation
 
-`go-kuro` 要实现 metaprogramming，就必须提供一系列额外接口来提供 meta 数据。
+包括以下一些库：
+
+- `github.com/go-kuro/kuro/ast`：重新定义、更易于修改、提供更多上下文信息的 AST。
+- `github.com/go-kuro/kuro/builder`：帮助快速生成 AST。
+- `github.com/go-kuro/kuro/query`：AST 的 query 机制，提供类似 CSS selector 的查询语言，以及类似 spark 的函数式编程机制。
+- `github.com/go-kuro/kuro/parser`：文件解析器，将源码解析成 `kuro/ast`。
+- `github.com/go-kuro/kuro/printer`：将 `kuro/ast` 还原成 Go1 源码，并提供反编译信息和 patch 信息。
+
+### Kuro macro
+
+`go-kuro` 要实现 metaprogramming，就需要有一些接口来操作预编译期间的 AST。
 
 `go-kuro` 的一个大原则是：在不修改 Go 语法的前提下进行 metaprogramming。
 
-这样的原则可以方便 `kuro` 自然的与各种 IDE 进行整合，避免像 TypeScript 一样来从零构建整个生态，这种事情只有 Microsoft 这种体量和社区影响力的公司能做到。同时，这个原则的可行性也很高，具体实现思路可以参考 Rust/Nim 的 macro 系统，以及 TypeScript 的 metadata 库，一些额外的编译器执行的指令来对代码进行操作，将源码当做输入来使用。
-
-### STL-like packages
-
-考虑到 Go 标准库里面已经实现了不少的基础类型，代码实现难度并不大，在符合开源协议的前提下借鉴就好了，重点是用来演示 `kuro` 在 metaprogramming 的可能性。
-
-应该会包括一下的库：
-
-- `container/*`：标准库的各种容器。
-- `sort`：标准库的排序。
+这样的原则可以方便 `kuro` 自然的与各种 IDE 进行整合，避免像 TypeScript 一样来从零构建整个生态，这种事情只有 Microsoft 这种体量和社区影响力的公司能做到。同时，这个原则的可行性也很高，具体实现思路可以参考 Rust/Nim 的 macro 系统，一些额外的编译器执行的指令来对代码进行操作，将源码当做输入来使用。
 
 ## 设计思路
 
@@ -80,7 +73,7 @@
 
 1. 分析当前待编译的项目代码和它依赖的所有代码，将这些代码放入 `kuro` 缓存目录中，这部分可以直接基于 `go mod graph` 的功能来实现。
 2. 解析所有代码的 AST，构建一个依赖树。
-3. 从依赖树的最叶子节点出发，逐个分析是否存在使用 `github.com/go-kuro/meta` 的代码，如果有，开始生成「生成代码」的程序，并执行。
+3. 从依赖树的最叶子节点出发，逐个分析是否存在使用 `github.com/go-kuro/macro` 的代码，如果有，开始生成「生成代码」的程序，并执行。
    - `kuro` 将所有用到 meta 的代码转化成操作 AST 的代码，提取出来放到一个临时的目录里面，所有函数的输入都是 AST，输出是修改过后的 AST，编译相关代码，生成一个独立的 binary。
    - `kuro` 分析所有被修改的代码位置，在 AST 里面标记出来，生成 DAG。
    - `kuro` 将 AST 和 DAG 输入给生成的 binary，执行完成后得到生成好的 AST。
@@ -119,3 +112,19 @@ $ git commit -m 'awesome commit'  # commit changes as usual.
 $ git push                        # push to upstream controlled by kuro.
                                   # kuro will generate code and merge changes.
 ```
+
+## 废弃的想法
+
+一些想过但是后来觉得不合理的东西。
+
+### Type guard
+
+之前曾想过要实现类似 TypeScript 的 type guard 和各种运算符，但是由于这个机制并不是很容易在 Go 语法基础上优雅的实现，包括 Go2 trait 支持后也不容易写出像 TypeScript 一样的 alias 和 guard 语法。
+
+特别是仔细评估了 TypeScript type guard 和 Rust/Nim 泛型能力之后，Go2 trait + interface 已经能够解决大部分泛型问题，再实现一个语法并不优雅的 type guard 收益不大。而且 type guard 主要解决的是不得不使用 `interface{}` 时候，减少调用者的代码错误，编译器多做一些事情来做输入检查，这是 TypeScript 之于 Javascript 要解决的主要问题。
+
+现有的大原则是「编译层面上完全兼容 Go1」从而避免自己开发各种开发工具，在没有很好的设计和收益情况下，倾向于不做。
+
+### STL-like packages
+
+由于 Go2 的 trait 一旦启用，这些 STL-like 库已经可以得到比较好的开发和使用体验，所以看起来已经不太需要重新用 macro 或者其他机制实现了。
