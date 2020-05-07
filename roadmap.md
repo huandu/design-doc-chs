@@ -28,9 +28,12 @@
 
 实现 `kuro` 命令中的基本功能，主要工作包括：
 
-- 实现 `github.com/go-kuro/kuro/cmd/kuro`。
+- 实现 `github.com/go-kuro/cmd/kuro`：
   - 劫持 `go build`/`go run`/`go test`/`go get`/`go install` 等常见命令。
   - 实现项目 cache，每次在执行 `kuro build` 等需要编译的命令时候，将本地代码生成到一个 cache 目录里面去，此时还不用做性能优化，每次都重新生成就好了。
+- 实现 `github.com/go-kuro/kuro`
+  - 实际上 `kuro` 命令行仅是一个启动器，所有真正跟分析代码和 AST 相关的工作都在这个库中完成，特别是这个库的根目录，里面是真正用来编译 macro 程序的框架逻辑。
+  - `kuro` 会根据用户代码所引用的 `github.com/go-kuro/kuro` 版本来构建 macro 程序。
 
 ## 阶段 3：实现 Git trampoline
 

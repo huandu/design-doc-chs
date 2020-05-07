@@ -51,6 +51,7 @@
 
 包括以下一些库：
 
+- `github.com/go-kuro/kuro`：生成用于分析 AST 的程序框架，由 `kuro` 命令行来调用。
 - `github.com/go-kuro/kuro/ast`：重新定义、更易于修改、提供更多上下文信息的 AST。
 - `github.com/go-kuro/kuro/builder`：帮助快速生成 AST。
 - `github.com/go-kuro/kuro/query`：AST 的 query 机制，提供类似 CSS selector 的查询语言，以及类似 spark 的函数式编程机制。
@@ -99,18 +100,22 @@
 预期中基本的 `kuro` 使用方法。
 
 ```shell
+# Install kuro.
+$ go install github.com/go-kuro/cmd/kuro
+
+# Ask kuro to trace a project.
 $ kuro clone https://url.to.my/go-repo/name.git
 $ cd name
 
-$ # Edit Go files and test it by using kuro.
-$ kuro build  # instead of go build.
-$ kuro test   # instead of go test.
+# Edit Go files and test it by using kuro.
+$ kuro build  # A replacement of `go build`.
+$ kuro test   # A replacement of `go test`.
 
-$ # It's time to submit code changes and push it to upstream.
+# It's time to submit code changes and push it to upstream.
 $ git add .
-$ git commit -m 'awesome commit'  # commit changes as usual.
-$ git push                        # push to upstream controlled by kuro.
-                                  # kuro will generate code and merge changes.
+$ git commit -m 'awesome commit'  # Commit changes as usual.
+$ git push                        # Push to upstream which is controlled by kuro.
+# Then, kuro will generate code and submit changes to real repo.
 ```
 
 ## 废弃的想法

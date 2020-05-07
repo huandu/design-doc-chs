@@ -77,7 +77,7 @@ func init() {
         // 得检查 stmt 中调用 assert.Assert 的地方是否处理了返回值，即看看 CallExpr 是不是一个 ExprStmt。
         // 如果处理了，则意味着使用者主动拿返回值做事情了，这里就不需要做什么特殊的事情；
         // 如果没有，则需要加上错误处理逻辑。
-        query.Stmts("ExprStmt > CallExpr[Fun~=@.Assert]", pkg).Map(func(stmt ast.Stmt) (modified []ast.Stmt) {
+        query.Stmts("ExprStmt > CallExpr[Fun~=@.Assert]", pkg).Map(func(stmt ast.Stmt) (modified ast.Stmt) {
             // 这个函数通过返回 modified 来修改 stmt 代码。
 
             fn := query.Parent("FuncDecl", stmt)
@@ -99,7 +99,7 @@ func init() {
             //     if err = assert.Assert(a > 0 && b > 0); err != nil {
             //         return
             //     }
-            modified = append(modified, &ast.IfStmt{
+            modified = &ast.IfStmt{
                 Init: &ast.AssignStmt{
                     Lhs: []ast.Expr{err},
                     Rhs: []ast.Expr{assert},
