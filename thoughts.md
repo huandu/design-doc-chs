@@ -10,22 +10,21 @@
 
 ## 使用场景
 
-### 减少重复代码
+提供一套类似于 [C# Expression Tree](https://docs.microsoft.com/en-us/dotnet/csharp/expression-trees) 的 API，从而实现 metaprogramming 能力。
 
-在 Go 里面经常会有很多很重复的代码。
+考虑到所有接口设计需要兼容当前的 Go compiler，至少在编辑代码阶段，要让 kuro 处理前的代码也能顺利经过 `go build` 编译，从而对 IDE 友好，所以这里很难设计出 C# 一样的机制，通过 Expression Tree 扩展出一种新的 DSL 语言。一个退而求其次的方法是设计出类似 [Rust Macros](https://doc.rust-lang.org/1.43.0/book/ch19-06-macros.html) 和 [Nim Macros](https://nim-lang.org/docs/manual.html#macros) 的卫生宏，仅仅做到函数级的代码生成，在不改变函数返回值的前提下做一些超越 generic 能力的工作。
 
-- 判断错误：比如随处可见的 `if err != nil {...}`。
-- 各种静态和动态 assertion：实现一些编译期 assert，并且使用 `return` 来实现动态 assert，避免使用 panic，并允许框架设计者在返回前插入逻辑和日志。
-- 常见的优化与最佳实践：特别是必须用泛型才能实现的优化，方便框架开发者降低使用者的思考负担，提升最终业务代码的质量，比如封装 `chan` 的最佳实践、自动使用 `strings.Builder` 来拼接字符串、减少使用不必要的 `interface{}` 等。
-- 常见的 `go generate` 场景：有一些经常会需要但很费事的场景能力，比如实现枚举变量并给每个变量来个名字。
+几个典型例子（来源于 C#、Rust 和 Nim）：
 
-这些能力都是为 Go 框架开发者实现的，希望在 `kuro` 开发阶段也能用于 `kuro` 代码本身——自己编译自己，这才是 metaprogramming 的本意。
+- 实现更强大的 debug 机制，类似 C macro 的变量打印，但是可以更强大（[Nim Debug Examples](https://nim-lang.org/docs/manual.html#macros-debug-example)）。
+- 实现静态数据构建，避免使用 `interface{}`，比如更好的 `Printf`，静态推导参数和拼接字符串。
+- 实现更好的 DSL，在符合 Go 语法的前提下设计出更易读的 DSL，比如实现某种程度的符号重载。
 
-### 实现 macro 能力
+### 提升代码生成器的使用体验
 
-提供一套类似于 Rust 的 macro API，从而实现 metaprogramming 能力。
+`go generate` 提供基本的代码生成能力，但是需要使用者手动执行 `go generate` 命令，且不能将代码生成工具（`go generate` 所调用的命令）纳入到 `go.mod` 的依赖管理体系中去。
 
-参考 [Rust Macros](https://doc.rust-lang.org/1.43.0/book/ch19-06-macros.html) 和 [Nim Macros](https://nim-lang.org/docs/manual.html#macros)。
+`kuro` 可以完全解决这个问题，并且通过双向的管理 VCS 上的源码来形成一种新的开发模式，让开发者可以几乎完全忘记代码生成这回事，减少维护成本。
 
 ## 功能规划
 
@@ -133,3 +132,15 @@ $ git push                        # Push to upstream which is controlled by kuro
 ### STL-like packages
 
 由于 Go2 的 trait 一旦启用，这些 STL-like 库已经可以得到比较好的开发和使用体验，所以看起来已经不太需要重新用 macro 或者其他机制实现了。
+
+### 全局 macro
+
+之前考虑过通过 `macro.NewGlobal` 来注册全局代码生成器，从而能够将整个 package 作为输入来进行代码修改。现在并没有什么语言支持这种全局 macro，所以现在我们实现这种能力可能不是个好想法。
+
+这个能力可能未来还会以某种形式实现，但是暂时带来的问题多于解决的问题，主要体现在：
+
+- 全局 macro 的执行顺序如何确定？是否需要多次执行？
+  - 如果有多个库注册了全局 macro，`kuro` 很难决策他们的执行顺序。
+  - 如果一个全局 macro A 生成的代码里存在另一个全局 macro B 需要处理的代码，那么是否应该在执行 A 之后再度执行 B？如果是，假如 B 又生成了 A 需要处理的代码，是否要继续迭代？这个问题很难回答和完美解决。
+- 全局 macro 如何保证生成的源码真正可编译？
+  - 一旦生成的代码不可编译，或者因为 macro 自己生成了错误的代码导致运行时错误，这会极大的增加调试难度，甚至无法调试。

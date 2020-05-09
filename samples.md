@@ -2,7 +2,7 @@
 
 在这里写了一些理想中的样例代码。由于 API 未定，这里面的 API 调用方式不代表最终设计，会不断修改和调整。
 
-## Macro
+## Macro 基础
 
 这里演示如何用 macro 实现一个业务 assert，特点是：
 
@@ -33,14 +33,12 @@ package assert
 
 import (
     "fmt"
-    "go/token"
 
     "github.com/go-kuro/kuro/ast"
-    "github.com/go-kuro/kuro/builder"
-    "github.com/go-kuro/kuro/query"
     "github.com/go-kuro/macro"
 )
 
+// Assert 实现类似 C 的 assert，能够将 cond 真正的源码放到 err 里面去。
 func Assert(cond bool) (err error) {
     // 如果 cond 满足，则什么也不发生。
     if cond {
@@ -51,74 +49,213 @@ func Assert(cond bool) (err error) {
     // 一旦使用 macro 能力，会导致每个调用这个 Assert 的代码都被「复制」一份，
     // 工作原理就像 C++ template instantiation 一样。
     //
-    // 需要注意，macro.New 中执行的函数其实就是一段普通函数，只是传入了当前 kuro 编译器上下文而已，
-    // 这个函数内部并不能真正的控制任何的编译器行为，所有函数中的代码都是动态执行的代码。
-    macro.New(func(ctx macro.Context) {
+    // 生成了 ast.Stmt 之后，kuro 将这些代码 inline 到当前函数中去。
+    macro.New(func(ctx macro.Context) ast.Stmt {
         // 拿到 cond 参数的 AST 信息，由于这个函数只有一个参数，所以可以直接取数组下标来拿到参数信息。
-        arg := ctx.Args()[0]
+        args := ctx.Args()
+        arg := macro.Var(ctx, args[0]) // 定义一个可以在 macro.Sttm 中使用的「变量」，编译期计算。
 
-        // 引用了外面定义的 err，在这里进行了赋值。
-        // arg 默认的 %v 行为就是打印出源码。
-        err = fmt.Errorf("assert: failed on %v", arg)
+        // macro.Parse 不会真的执行，这只是一个编译期的工具函数，用来把输入的任何表达式变成 `ast.Expr`。
+        //
+        // 下面这段代码会被 kuro 解析成 AST，并且将其中可以在编译器得到结果的部分替换成常量。
+        // 比如这里面的 arg，会在编译期得到具体值 "a > 0 && b > 0"。
+        //
+        // macro.Parse 会自动解析 func() 的代码并且生成必要的 AST 构建代码，
+        // 相当于手写了下面的代码：
+        //
+        //     fmtPkg := builder.Import("fmt")
+        //     return &ast.AssignStmt{
+        //         Lhs: []ast.Expr{ast.NewIdent("err")}, // 这个 err 是引用闭包外的普通变量。
+        //         Rhs: []ast.Expr{
+        //             &ast.CallExpr{
+        //                 Fun: fmtPkg.Func("Errorf"),
+        //                 Args: []ast.Expr{
+        //                     &ast.BasicLit{
+        //                         Kind: token.STRING,
+        //                         Value: `"assert: failed on %v"`,
+        //                     },
+        //                     arg, // 注意这里，使用的是闭包外面的变量 arg，编译期会得到具体值。
+        //                 },
+        //             },
+        //         },
+        //     }
+        return macro.Parse(func() {
+            err = fmt.Errorf("assert: failed on %v", arg)
+        }).(*ast.FuncLit).Body
     })
     return
 }
+```
 
-func init() {
-    // macro.NewGlobal 可以注册一个全局 AST 处理器。
-    // 只要使用者引用了当前 package，这个处理器就会被执行，将使用者的 package 代码作为输入
-    // 这个处理器需要在 package init 或全局变量执行的时候注册，这样 kuro 就可以很容易编译这些处理器，
-    // 仅需要简单的将当前 package 重新编译成 kuro AST manipulator binary 就可以了。
-    // 一个 package 可以注册多个 AST 处理器，执行先后顺序按照注册顺序来排列。
-    macro.NewGlobal(func(ctx macro.Context, pkg ast.Package) {
-        // 通过 selector 语法选择所有 assert.Assert 的调用。
-        // 这里选择的是符合指定表达式的最小 stmt。
-        //
-        // 得检查 stmt 中调用 assert.Assert 的地方是否处理了返回值，即看看 CallExpr 是不是一个 ExprStmt。
-        // 如果处理了，则意味着使用者主动拿返回值做事情了，这里就不需要做什么特殊的事情；
-        // 如果没有，则需要加上错误处理逻辑。
-        query.Stmts("ExprStmt > CallExpr[Fun~=@.Assert]", pkg).Map(func(stmt ast.Stmt) (modified ast.Stmt) {
-            // 这个函数通过返回 modified 来修改 stmt 代码。
+## 用 Macro 修改函数参数
 
-            fn := query.Parent("FuncDecl", stmt)
+用 macro 的能力修改函数的入口参数，从而实现一些比较有意思的 DSL。这里演示的是 SQL builder 中的查询条件。
 
-            // 同时还要看看执行 assert.Assert 的地方是否返回了 error，
-            // 如果没返回 error，则意味着没法正常 assert，报编译错误。
-            if !query.Test("Type.Results.List(-1)[Type=error]", fn) {
-                ctx.Throw(stmt, "assert.Assert is called in a func/method which doesn't return error")
-                return
-            }
+### 使用 SQL DSL 的业务代码
 
-            // 拿到这个 CallExpr，将它作为后续处理的一部分。
-            assert := query.Exprs("CallExpr").First()
+```go
+package main
 
-            // 拿到函数返回值信息，尽可能的使用返回值名字进行赋值。
-            err := builder.UseResult(query.Exprs("Type.Results", fn), -1)
+import (
+    "time"
 
-            // 生成代码。
-            //     if err = assert.Assert(a > 0 && b > 0); err != nil {
-            //         return
-            //     }
-            modified = &ast.IfStmt{
-                Init: &ast.AssignStmt{
-                    Lhs: []ast.Expr{err},
-                    Rhs: []ast.Expr{assert},
-                },
-                Cond: &ast.BinaryExpr{
-                    X: err,
-                    Op: token.NEQ,
-                    Y: &ast.Ident{
-                        Name: "nil",
-                    },
-                },
-                Body: &ast.BlockStmt{
-                    List: []ast.Stmt{
-                        builder.Return(err),
-                    },
-                },
+    "url.to/my/framework/orm"
+)
+
+type User struct {
+    Name      string
+    Email     string
+    CreatedAt time.Time
+}
+
+func FindUserByID(ctx context.Context, uid UserID) (err error) {
+    var user User
+
+    err = orm.DB(ctx).From("users").Where(
+        `uid` == orm.Var(uid) && `status` == orm.In(1, 2, 3)
+    ).First(&user)
+
+    // 使用这些变量进行业务处理。
+
+    return
+}
+```
+
+### SQL DSL 框架实现
+
+这里仅演示 `Where` 的实现，其他方法不太需要用到 macro。
+
+```go
+package orm
+
+import (
+    "go/token"
+    "strconv"
+    "strings"
+
+    "github.com/go-kuro/kuro/ast"
+    "github.com/go-kuro/macro"
+)
+
+func (q *Query) Where(cond bool) *Query {
+    // 虽然这个函数参数只有 cond，但可以通过 macro 能力直接改写函数参数，从而接收更多的输入。
+    //
+    // 一些注意事项：
+    //   - 函数的参数和返回值都可以被修改，但是 Recv 不能被修改。
+    //   - 如果函数返回值类型修改后造成调用者无法通过编译，kuro 会报错。
+    //   - 如果这个函数是 Query 实现某种 interface 的一个必要函数，那么 kuro 会直接报错，
+    //     这是因为 kuro 必然会修改函数的名字，来实现 generic，必然会导致 interface 不再被满足。
+
+    // macro.Rewrite 调用之后，整个函数签名和实现都会修改，签名任何的代码都会被忽略。
+    // 使用者可以用这个特性来实现 static assert 类似的能力，仅作一些编译检查。
+    macro.Rewrite(func(ctx macro.Context) *ast.FuncLit {
+        args := ctx.Args()
+        condExpr := args[0] // 原函数只有一个参数，可以放心的取下标。
+        whereExpr := parseWhereExpr(condExpr)
+
+        // 声明用于 macro.FuncDecl 的变量，这些变量的类型通过 `.(type)` 来指定。
+        // 如果以后 Go2 普及了，可以使用 Go2 的 trait 语法，即类似于 `macro.Var(*Query)(ctx.Recv())`。
+        q := macro.Var(ctx, ctx.Recv()).(*Query)
+        where := macro.Const(ctx, whereExpr).(string) // whereExpr 必须是一个可以赋值给 const 的表达式，否则 kuro 会报错。
+
+        return macro.Parse(func(values ...interface{}) *Query {
+            q.where = append(q.where, &whereExpr{
+                Where: where,
+                Values: values,
             })
-            return
+            return q
         })
     })
+}
+
+// parseWhereExpr 将参数解析成一段 SQL 字符串常量。
+//
+// 要实现这个 Where 的关键思路是：解析 condExpr 的逻辑表达式，并且将它转成 SQL 逻辑表达式。
+// 由于完整实现这个能力会需要花费非常多的代码，这里仅作一些必要的 demo，实现下面简单形式的代码。
+//
+//     `col1` == value1 && `col2` == value2
+//
+// 因此，暂时忽略 UnaryExpr 以及括号之类的。
+func parseWhereExpr(expr ast.Expr) (result ast.Expr) {
+    binary := expr.(*ast.BinaryExpr)
+
+    if isLogic(binary) {
+        result = parseLogic(expr)
+        return
+    }
+
+    var op string
+
+    switch binary.Op {
+    case token.LAND: // &&
+        op = " AND "
+    case token.LOR: // ||
+        op = " OR "
+    default:
+        panic("orm: unsupported logic op")
+    }
+
+    return &ast.BinaryExpr{
+        X: &ast.BinaryExpr{
+            X: parseWhereExpr(binary.X),
+            Op: token.ADD,
+            Y: &ast.BasicLit{
+                Kind: token.STRING,
+                Value: strconv.Quote(op),
+            },
+        },
+        Op: token.ADD,
+        Y: parseWhereExpr(binary.Y),
+    },
+}
+
+// isLogic 判断这个 binary 是否是一个查询逻辑了。
+// 如果 X 或者 Y 是 BasicLit，则说明是形如 `col1` == value1 的形式，
+// 可以直接开始分析结构并生成 SQL 了。
+func isLogic(expr *ast.BinaryExpr) bool {
+    _, ok1 := expr.X.(*ast.BasicLit)
+    _, ok2 := expr.Y.(*ast.BasicLit)
+    return ok1 || ok2
+}
+
+// parseLogic 解析逻辑表达式，并且返回 SQL 表达式。
+// 为了避免示例写太长，这里假定 X 一定是 `col` 形式的常量，Y 一定是 `orm.Var(xxx)` 的函数调用。
+func parseLogic(logic *ast.BinaryExpr) (expr ast.Expr, args []ast.Expr) {
+    var op, value string
+
+    switch binary.Op {
+    case token.EQL: // &&
+        op = " = "
+    case token.NEQ: // ||
+        op = " <> "
+    default:
+        panic("orm: unsupported logic op")
+    }
+
+    col := logic.X.(*ast.BasicLit).Value
+    call := logic.Y.(*ast.CallExpr)
+
+    switch call.Fun.(*ast.SelectorExpr).Sel.Name {
+    case "Var":
+        value = "?"
+    case "In":
+        switch binary.Op {
+        case token.EQL:
+            op = " IN "
+        case token.NEQ:
+            op = " NOT IN "
+        }
+
+        value = strings.Repeat("?, ", len(call.Args))
+        value = value[:len(value)-2] // 去掉多余的逗号。
+        value = "(" + value + ")"
+    }
+
+    expr = &ast.BasicLit{
+        Kind: token.STRING,
+        Value: strconv.Quote(col+op+value),
+    }
+    args = call.Args
+    return
 }
 ```
