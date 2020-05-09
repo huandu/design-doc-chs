@@ -144,27 +144,27 @@ func (q *Query) Where(cond bool) *Query {
     //   - 函数的参数和返回值都可以被修改，但是 Recv 不能被修改。
     //   - 如果函数返回值类型修改后造成调用者无法通过编译，kuro 会报错。
     //   - 如果这个函数是 Query 实现某种 interface 的一个必要函数，那么 kuro 会直接报错，
-    //     这是因为 kuro 必然会修改函数的名字，来实现 generic，必然会导致 interface 不再被满足。
+    //     这是因为 kuro 必然会修改函数的名字来实现 generic，必然会导致 interface 不再被满足。
 
-    // macro.Rewrite 调用之后，整个函数签名和实现都会修改，签名任何的代码都会被忽略。
+    // macro.Rewrite 调用之后，整个函数签名和实现都会修改，前面任何的代码都会被忽略。
     // 使用者可以用这个特性来实现 static assert 类似的能力，仅作一些编译检查。
-    macro.Rewrite(func(ctx macro.Context) *ast.FuncLit {
-        args := ctx.Args()
-        condExpr := args[0] // 原函数只有一个参数，可以放心的取下标。
-        whereExpr := parseWhereExpr(condExpr)
+    macro.Rewrite(func(ctx macro.Context) (fn *ast.FuncLit, args []ast.Expr) {
+        condExpr := ctx.Args()[0] // 原函数只有一个参数，可以放心的取下标。
+        whereExpr, args := parseWhereExpr(condExpr)
 
-        // 声明用于 macro.FuncDecl 的变量，这些变量的类型通过 `.(type)` 来指定。
-        // 如果以后 Go2 普及了，可以使用 Go2 的 trait 语法，即类似于 `macro.Var(*Query)(ctx.Recv())`。
+        // 声明用于 macro.Parse 的变量，这些变量的类型通过 `.(type)` 来指定。
+        // 如果以后 Go2 普及了，可以使用 Go2 的 generic 语法，即类似于 `macro.Var(*Query)(ctx.Recv())`。
         q := macro.Var(ctx, ctx.Recv()).(*Query)
         where := macro.Const(ctx, whereExpr).(string) // whereExpr 必须是一个可以赋值给 const 的表达式，否则 kuro 会报错。
 
-        return macro.Parse(func(values ...interface{}) *Query {
+        fn = macro.Parse(func(values ...interface{}) *Query {
             q.where = append(q.where, &whereExpr{
                 Where: where,
                 Values: values,
             })
             return q
         })
+        return
     })
 }
 
@@ -173,15 +173,19 @@ func (q *Query) Where(cond bool) *Query {
 // 要实现这个 Where 的关键思路是：解析 condExpr 的逻辑表达式，并且将它转成 SQL 逻辑表达式。
 // 由于完整实现这个能力会需要花费非常多的代码，这里仅作一些必要的 demo，实现下面简单形式的代码。
 //
-//     `col1` == value1 && `col2` == value2
+//     `uid` == orm.Var(uid) && `status` == orm.In(1, 2, 3)
 //
 // 因此，暂时忽略 UnaryExpr 以及括号之类的。
-func parseWhereExpr(expr ast.Expr) (result ast.Expr) {
+//
+// 最终生成的 SQL 语句如下：
+//
+//     result = "`uid` = ? AND `status` IN (?, ?, ?)"
+//     values = uid, 1, 2, 3 // 这些是代码，懒得写 AST 了。
+func parseWhereExpr(expr ast.Expr) (result ast.Expr, values []ast.Expr) {
     binary := expr.(*ast.BinaryExpr)
 
     if isLogic(binary) {
-        result = parseLogic(expr)
-        return
+        return parseLogic(expr)
     }
 
     var op string
@@ -195,9 +199,13 @@ func parseWhereExpr(expr ast.Expr) (result ast.Expr) {
         panic("orm: unsupported logic op")
     }
 
+    x, xValues := parseWhereExpr(binary.X)
+    y, yValues := parseWhereExpr(binary.Y)
+    values = xValues
+    values = append(values, yValues...)
     return &ast.BinaryExpr{
         X: &ast.BinaryExpr{
-            X: parseWhereExpr(binary.X),
+            X: x,
             Op: token.ADD,
             Y: &ast.BasicLit{
                 Kind: token.STRING,
@@ -205,7 +213,7 @@ func parseWhereExpr(expr ast.Expr) (result ast.Expr) {
             },
         },
         Op: token.ADD,
-        Y: parseWhereExpr(binary.Y),
+        Y: y,
     },
 }
 
@@ -220,7 +228,7 @@ func isLogic(expr *ast.BinaryExpr) bool {
 
 // parseLogic 解析逻辑表达式，并且返回 SQL 表达式。
 // 为了避免示例写太长，这里假定 X 一定是 `col` 形式的常量，Y 一定是 `orm.Var(xxx)` 的函数调用。
-func parseLogic(logic *ast.BinaryExpr) (expr ast.Expr, args []ast.Expr) {
+func parseLogic(logic *ast.BinaryExpr) (expr ast.Expr, values []ast.Expr) {
     var op, value string
 
     switch binary.Op {
@@ -255,7 +263,7 @@ func parseLogic(logic *ast.BinaryExpr) (expr ast.Expr, args []ast.Expr) {
         Kind: token.STRING,
         Value: strconv.Quote(col+op+value),
     }
-    args = call.Args
+    values = call.Args
     return
 }
 ```
